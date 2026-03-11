@@ -5,7 +5,7 @@ Docsify-powered multi-product documentation hub.
 ## Structure
 
 - `/` → landing page with links to all product ideas
-- `/hybrid-intraday-trading-system/` → first product docs (Docsify app)
+- `/hybrid-intraday-trading-system/` → Tickr docs (Docsify app)
 
 ## Local Preview
 

@@ -1,4 +1,4 @@
-# Hybrid Intraday Trading System
+# Tickr
 
 **Architecture & Implementation Guide**
 
@@ -730,50 +730,160 @@ GROUP BY time_bucket('5 minutes', time), symbol;
 
 ### 5.1 Core Technologies
 
-| Component          | Technology     | Version  | Purpose                      |
-| ------------------ | -------------- | -------- | ---------------------------- |
-| **Language**       | Python         | 3.11+    | Single language simplicity   |
-| **AI Platform**    | OpenClaw       | Latest   | Intelligence layer assistant |
-| **Async Runtime**  | asyncio        | Built-in | Event-driven architecture    |
-| **Time-series DB** | TimescaleDB    | 2.x      | Historical market data       |
-| **Cache**          | Redis          | 7.x      | Real-time state              |
-| **Relational DB**  | PostgreSQL     | 15.x     | Positions, orders            |
-| **ML Framework**   | LightGBM       | 4.x      | Fast AI filter               |
-| **Deployment**     | Docker Compose | -        | Container orchestration      |
+| Component          | Technology                                                     | Version  | Purpose                      |
+| ------------------ | -------------------------------------------------------------- | -------- | ---------------------------- |
+| **Language**       | Python                                                         | 3.11+    | Core trading/data services   |
+| **AI Platform**    | OpenClaw + Cloudflare Worker (context runtime in early phases) | Latest   | Intelligence layer assistant |
+| **Async Runtime**  | asyncio                                                        | Built-in | Event-driven architecture    |
+| **Time-series DB** | TimescaleDB                                                    | 2.x      | Historical market data       |
+| **Cache**          | Redis                                                          | 7.x      | Real-time state              |
+| **Relational DB**  | PostgreSQL                                                     | 15.x     | Positions, orders            |
+| **ML Framework**   | LightGBM                                                       | 4.x      | Fast AI filter               |
+| **Deployment**     | Docker Compose + Cloudflare Worker                             | -        | Local stack + cloud context  |
 
-### 5.2 Python Libraries
+### 5.2 Python Dependencies (Core Services)
 
 ```python
-# requirements.txt
-asyncio>=3.11
-aiohttp>=3.9.0
+# requirements.txt (core deps)
+aiohttp>=3.10.0
 websockets>=12.0
-pandas>=2.0.0
-numpy>=1.24.0
-lightgbm>=4.0.0
-scikit-learn>=1.3.0
-redis>=5.0.0
-psycopg2>=2.9.0
+pandas>=2.2.0
+numpy>=1.26.0
+lightgbm>=4.5.0
+scikit-learn>=1.5.0
+redis>=5.1.0
+psycopg2-binary>=2.9.9
+sqlalchemy>=2.0.35
+pydantic>=2.9.0
+pyyaml>=6.0.2
+structlog>=24.4.0
+prometheus-client>=0.21.0
 ```
 
-### 5.3 Infrastructure
+### 5.3 Cloudflare Worker Dependencies (Context Layer)
 
-**Deployment:** Mac mini (local 24/7 runtime)
+```json
+{
+  "dependencies": {
+    "zod": "^3.23.0",
+    "ioredis": "^5.4.0"
+  }
+}
+```
+
+### 5.4 Infrastructure
+
+**Deployment (Phases 0-5):** Existing local machine + Cloudflare Worker (no new hardware purchase)
 
 **Container Stack:**
 
 - `market-data-collector` - Data ingestion
-- `openclaw` - AI assistant platform
-- `trading-engine` - Execution layer
+- `trading-engine` - Execution layer (replay/paper)
 - `watchdog` - Process monitoring
 - `redis` - Cache & pub/sub
 - `postgres` - Database (with TimescaleDB extension)
 - `prometheus` - Metrics
 - `grafana` - Dashboards
+- `context-worker` (Cloudflare Worker) - OpenClaw context generation and publishing
+
+**Deployment (Phase 6+):** Dedicated machine only after paper-trading Go gate is passed
 
 ---
 
 ## 6. Development Roadmap
+
+### Phase 0: Groundwork & Tech Stack Setup (Week 0-1)
+
+**Goal:** Establish a concrete Python-first core stack with Cloudflare used only for OpenClaw context until paper-trading validation.
+
+**Hard Decisions (No Alternatives):**
+
+1. **Core service language:** Python 3.11 (`market-data-collector`, `trading-engine`, `watchdog`)
+2. **Context runtime in Phases 0-5:** Cloudflare Worker + Cron (OpenClaw context publishing only)
+3. **Infra runtime for all non-context services:** Docker Compose on existing local machine
+4. **Databases:** PostgreSQL 15 + TimescaleDB 2.x + Redis 7
+5. **Schema management:** Ruby on Rails migrations (single source of truth for DB schema)
+6. **Python dependency and environment management:** Poetry
+7. **CI/CD:** GitHub Actions
+
+**Concrete Repository Structure (single repository):**
+
+- `/services/market-data-collector` - Python ingestion service
+- `/services/trading-engine` - Python deterministic execution service
+- `/services/watchdog` - Python health and restart monitor
+- `/services/context-worker` - Cloudflare Worker project (OpenClaw context only)
+- `/db/rails` - Rails app for migrations and schema management
+- `/configs` - `dev.yaml`, `replay.yaml`, `paper.yaml`, `live.yaml`
+- `/scripts` - bootstrap, healthcheck, replay smoke test
+- `/docs` - runbook, redis contracts, deployment SOP
+
+**Implementation Plan (Day-by-Day):**
+
+- **Step 1 — Python Foundation**
+  - Initialize Poetry project and lock dependencies
+  - Add lint (`ruff`), format (`black`), tests (`pytest`), type checks (`mypy`)
+  - Add shared config validation with Pydantic
+
+- **Step 2 — Local Infra Setup**
+  - Create Docker Compose for `redis`, `postgres` (Timescale enabled), `prometheus`, `grafana`
+  - Add health checks and startup ordering
+  - Validate persistence with named volumes
+
+- **Step 3 — DB Schema via Rails**
+  - Create minimal Rails migration project under `/db/rails`
+  - Add migrations for `symbols`, `positions`, `orders`, `signals`
+  - Enable Timescale extension and create `ohlcv_1m` hypertable migration
+  - Seed symbols via Rails seed task
+
+- **Step 4 — OpenClaw Context on Cloudflare**
+  - Implement Cloudflare Worker scheduled every 2 minutes
+  - Worker reads recent OHLCV + computes deterministic regime/scores/watchlist
+  - Worker publishes `market:regime`, `market:score:{symbol}`, `market:watchlist` with strict TTL
+  - Enforce no broker credential usage in Worker
+
+- **Step 5 — Trading Engine Skeleton**
+  - Implement event loop reading market data + context from Redis
+  - Add required flags: `trading_enabled`, `ml_filter_enabled`, `mode`
+  - Implement neutral fallback when context expires
+
+- **Step 6 — Observability & Safety**
+  - Add structured JSON logging and correlation IDs
+  - Add `/metrics` for each Python service
+  - Add watchdog checks and alerts for process down, data lag, stale context
+
+- **Step 7 — CI/CD + Full Rehearsal**
+  - GitHub Actions: lint, format check, typecheck, tests, Rails migration apply, replay smoke test
+  - Run bootstrap from clean clone on existing machine
+  - Verify replay-to-paper transition with config-only switch
+
+**Groundwork Exit Criteria (Must Pass Before Phase 1):**
+
+- ✓ Full stack starts with one command on existing machine
+- ✓ Cloudflare context worker publishes valid context every 2 minutes for 24h
+- ✓ Trading engine runs replay mode continuously for 24h
+- ✓ Context TTL expiry always triggers neutral fallback correctly
+- ✓ Rails migration pipeline succeeds from empty DB and incremental updates
+- ✓ CI passes on every push
+- ✓ Runbook includes startup, shutdown, and outage recovery
+
+**Phase 0 Output Artifacts:**
+
+- `docker-compose.yml`
+- `pyproject.toml` + `poetry.lock`
+- `services/market-data-collector/*`
+- `services/trading-engine/*`
+- `services/watchdog/*`
+- `services/context-worker/*`
+- `db/rails/*` (migrations + schema)
+- `configs/dev.yaml`, `configs/replay.yaml`, `configs/paper.yaml`, `configs/live.yaml`
+- `scripts/bootstrap.sh`, `scripts/healthcheck.sh`, `scripts/replay_smoke_test.sh`
+- `docs/redis-contracts.md`, `docs/runbook.md`
+
+**Cost Strategy (Aligned to Your Goal):**
+
+- Use existing machine + Cloudflare Worker through paper trading
+- No dedicated machine purchase before paper-trading Go gate
+- Buy dedicated hardware only after paper-trading criteria are met
 
 ### Phase 1: Market Data Backbone
 
