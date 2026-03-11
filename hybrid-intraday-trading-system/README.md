@@ -2,7 +2,7 @@
 
 **Architecture & Implementation Guide**
 
-Version: 1.0 | Last Updated: February 18, 2026 | Status: Design Phase
+Version: 1.1 | Last Updated: March 11, 2026 | Status: Design Phase
 
 ---
 
@@ -54,13 +54,15 @@ OpenClaw generates market context (scores, regime, watchlists) and publishes to 
 
 ### 1.4 Key Objectives
 
-| Objective           | Target                                                       |
-| ------------------- | ------------------------------------------------------------ |
-| **Latency**         | Signal-to-order decision < 100ms (P95, excluding broker API) |
-| **Uptime**          | 99.9% during market hours                                    |
-| **Signal Quality**  | Aspirational: AI filter approval rate > 70%                  |
-| **Risk Compliance** | 100% pre-trade checks (hard limit)                           |
-| **Slippage**        | Average < 0.02%                                              |
+| Objective           | Target                                                        |
+| ------------------- | ------------------------------------------------------------- |
+| **Latency**         | Signal-to-order decision < 100ms (P95, excluding broker API)  |
+| **Uptime**          | 99.9% during market hours                                     |
+| **Signal Quality**  | Aspirational: AI filter approval rate > 70%                   |
+| **Risk Compliance** | 100% pre-trade checks (hard limit)                            |
+| **Slippage**        | Average < 0.02%                                               |
+| **Expectancy**      | > ₹0.00 per trade (avg_win × win_rate − avg_loss × loss_rate) |
+| **Profit Factor**   | > 1.5 (gross profit / gross loss over rolling 30-day window)  |
 
 ### 1.5 Architecture Overview
 
@@ -451,7 +453,7 @@ graph TB
 
 **Risk Limits:**
 
-- Daily loss limit: $500 (hard stop)
+- Daily loss limit: ₹500 (hard stop)
 - Max position size: 2% of capital per symbol
 - Max sector concentration: 30%
 - Max concurrent positions: Configurable (default: 5)
@@ -773,7 +775,7 @@ psycopg2>=2.9.0
 
 ## 6. Development Roadmap
 
-### Phase 1: Market Data Backbone (2-3 weeks)
+### Phase 1: Market Data Backbone
 
 **Goal:** Build reliable, centralized data collection and storage as the foundation for ALL system components
 
@@ -829,7 +831,7 @@ Replay 5 trading days of historical data. Both OpenClaw context generation and T
 
 ---
 
-### Phase 2: OpenClaw Context Generator Setup (3-4 weeks)
+### Phase 2: OpenClaw Context Generator Setup
 
 **Goal:** Install OpenClaw and build core deterministic context-generation skills
 
@@ -871,7 +873,7 @@ OpenClaw NEVER connects directly to broker websocket feeds.
 
 ---
 
-### Phase 3: Trading Engine (4-5 weeks)
+### Phase 3: Trading Engine
 
 **Goal:** Build deterministic execution layer with paper trading
 
@@ -909,7 +911,34 @@ Market data ingestion is centralized in the data backbone service (Phase 1). All
 
 ---
 
-### Phase 4: ML Signal Filter (3-4 weeks)
+### Signal Edge Validation Gate
+
+**Before proceeding to Phase 4 (ML Filter), the raw signal generator must demonstrate positive expectancy in isolation.**
+
+This is a hard gate. The ML filter and OpenClaw context are enhancements — they cannot create edge that doesn't exist in the base signals. Testing them before validating the base signals produces misleading results and wastes Phase 4 effort.
+
+**Validation Method:**
+
+Run the signal generator against 60+ days of replayed historical data with OpenClaw context **disabled** (neutral regime, no watchlist filter). Record every signal with entry, stop, and target. Calculate:
+
+```
+expectancy = (avg_win × win_rate) - (avg_loss × loss_rate)
+```
+
+**Gate Criteria (minimum 200 signals required):**
+
+| Metric                     | Minimum to Proceed                   |
+| -------------------------- | ------------------------------------ |
+| Expectancy per trade       | > ₹0.00 (positive)                   |
+| Profit factor              | > 1.2                                |
+| Win rate                   | > 40% (with avg_win ≥ 1.5× avg_loss) |
+| Max drawdown in simulation | < 20%                                |
+
+**If the gate fails:** Revise signal logic (entry conditions, stop placement, target ratios) and re-run. Do not proceed to Phase 4 until the base signals clear the gate. Adding the ML filter to a signal generator with no edge will produce a well-optimised system that reliably loses money.
+
+---
+
+### Phase 4: ML Signal Filter
 
 **Goal:** Add machine learning layer to improve signal quality (after deterministic baseline established)
 
@@ -945,9 +974,18 @@ Begin with deterministic feature calculations before introducing machine learnin
 - ✓ Inference < 30ms
 - ✓ Approved signals win rate > 55% (backtested)
 
+**Model Lifecycle Requirements:**
+
+The LightGBM filter must not be treated as a static artifact deployed once. Add the following to the Phase 4 deliverables:
+
+- **Retraining cadence**: Retrain monthly on a rolling 90-day window of live signal outcomes. Retraining must be a scheduled, automated pipeline — not a manual step.
+- **Staleness alert**: If the model has not been retrained in > 45 days, the Alert Manager must fire a warning. At > 60 days, the trading engine must log a critical event.
+- **Live vs backtest drift monitor**: Track the model's live approval rate on a 7-day rolling basis. If it deviates > 15 percentage points from the backtest approval rate, trigger an alert and flag signals as "unvalidated" in the execution log.
+- **Filter bypass switch**: A config flag `ml_filter_enabled: true/false` must allow the filter to be disabled without a code change, falling back to deterministic signal logic. This is essential for diagnosing whether the model is helping or hurting during live operation.
+
 ---
 
-### Phase 5: Runtime Stability (2-3 weeks)
+### Phase 5: Runtime Stability
 
 **Goal:** Harden for 24/7 operation
 
@@ -965,7 +1003,30 @@ Begin with deterministic feature calculations before introducing machine learnin
 
 ---
 
-### Phase 6: Live Trading (4-6 weeks)
+### Paper Trading Go/No-Go Gate
+
+**Before proceeding to Phase 6 (Live Trading), the system must complete a structured paper trading period and clear explicit criteria.**
+
+Paper trading must run through a full evaluation cycle with the full stack active (OpenClaw context + ML filter + risk manager) against live market data. Paper trading against replayed data does not satisfy this gate — market microstructure, feed latency, and OpenClaw's live reasoning must all be exercised.
+
+**Minimum trade count: 150 paper trades.**
+
+**Go criteria (all must be met):**
+
+| Metric                  | Required                       | Notes                                      |
+| ----------------------- | ------------------------------ | ------------------------------------------ |
+| Expectancy per trade    | > ₹0.00                        | Measured after simulated slippage of 0.02% |
+| Profit factor           | > 1.3                          | Gross profit / gross loss                  |
+| Max drawdown            | < 12%                          | From peak paper equity                     |
+| Daily loss limit hit    | ≤ 2 times per evaluation cycle | Counts days the -₹500 hard stop triggered  |
+| Consecutive losing days | < 5 in a row                   | Signals a structural regime mismatch       |
+| System uptime           | > 99%                          | During market hours                        |
+
+**No-go action:** If any criterion is not met, do not proceed to live trading. Identify the root cause (signal failure, regime mismatch, filter drift), make targeted changes, and restart the paper trading period from zero. A partial restart does not count.
+
+**Slippage modelling during paper trading:**
+
+Paper fills must simulate realistic execution. Apply a fixed 0.02% slippage penalty to every fill (both entry and exit). Do not use mid-price or last-price fills — use ask for buys and bid for sells from the live feed.
 
 **Goal:** Deploy with minimal capital
 
@@ -978,9 +1039,9 @@ Begin with deterministic feature calculations before introducing machine learnin
 
 **Capital Plan:**
 
-- Week 1-2: $1,000 (max $300/position)
-- Week 3-4: $2,000 (max $500/position)
-- Week 5-6: $5,000 (max $1,000/position)
+- Stage 1: ₹1,000 (max ₹300/position)
+- Stage 2: ₹2,000 (max ₹500/position)
+- Stage 3: ₹5,000 (max ₹1,000/position)
 
 **Success Criteria:**
 
@@ -990,7 +1051,7 @@ Begin with deterministic feature calculations before introducing machine learnin
 
 ---
 
-### Phase 7: Experimental Context Enhancements (4-6 weeks)
+### Phase 7: Experimental Context Enhancements
 
 **Goal:** Optional advanced context generation (experimental, deterministic-first)
 
@@ -1034,7 +1095,7 @@ After deterministic baselines are established, consider:
 
 ---
 
-### Phase 8: API Platform (6-8 weeks)
+### Phase 8: API Platform
 
 **Goal:** Expose intelligence as service
 
@@ -1094,8 +1155,19 @@ python watchdog.py --config production.yaml &
 | --------- | ------- | -------- | ---------------- |
 | CPU Usage | > 70%   | > 90%    | Investigate leak |
 | Memory    | > 3GB   | > 4GB    | Restart process  |
-| Daily P&L | < -$200 | < -$500  | **HALT TRADING** |
+| Daily P&L | < -₹200 | < -₹500  | **HALT TRADING** |
 | Data Lag  | > 1s    | > 5s     | Reconnect feed   |
+
+**Post-Halt Protocol (Daily P&L Critical):**
+
+When the -₹500 daily loss limit triggers, the system halts automatically. It does **not** restart automatically the next morning. Resuming live trading requires a manual review gate:
+
+1. Pull the execution log for the halted day
+2. Classify each losing trade: signal failure, data issue, or adverse market conditions
+3. Determine whether the losses were within the expected statistical distribution or indicate a structural problem
+4. Make a deliberate go/no-go decision before re-enabling the trading engine
+
+Set `trading_enabled: true` in config to resume. This config flag must be set to `false` by the halt handler and must require a human to reset it. Automatic resumption after a bad day is how small losses compound into large ones.
 
 ### 7.4 Emergency Stop
 
@@ -1168,6 +1240,8 @@ kill -SIGTERM $(pgrep -f trading_engine)
 - Sharpe ratio > 1.5
 - Max drawdown < 15%
 - Zero risk limit violations
+- Positive expectancy per trade (measured monthly, after slippage)
+- Profit factor > 1.5 on rolling 30-day basis
 
 ### 8.4 References
 
