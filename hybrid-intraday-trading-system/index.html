@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Hybrid Intraday Trading System | doxer</title>
+    <meta name="description" content="Architecture and implementation guide" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/docsify@4/lib/themes/vue.css" />
+  </head>
+  <body>
+    <div id="app">Loading docs...</div>
+    <script>
+      window.$docsify = {
+        name: 'Hybrid Intraday Trading System',
+        loadSidebar: true,
+        subMaxLevel: 2,
+        auto2top: true,
+        homepage: 'README.md',
+        markdown: {
+          smartypants: true,
+          renderer: {
+            code: function(code, lang) {
+              if (lang === 'mermaid') {
+                return '<div class="mermaid">' + code + '</div>';
+              }
+              return this.origin.code.apply(this, arguments);
+            }
+          }
+        },
+        mermaid: {
+          theme: 'default',
+          startOnLoad: true
+        },
+        search: {
+          maxAge: 86400000,
+          paths: 'auto',
+          placeholder: 'Search',
+          noData: 'No results',
+          depth: 2
+        }
+      };
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/docsify@4"></script>
+    <script src="https://cdn.jsdelivr.net/npm/docsify/lib/plugins/search.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/docsify-mermaid@2/dist/docsify-mermaid.js"></script>
+    <script>
+      mermaid.initialize({ startOnLoad: true });
+    </script>
+  </body>
+</html>
