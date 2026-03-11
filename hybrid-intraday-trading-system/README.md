@@ -495,6 +495,70 @@ sequenceDiagram
     Broker-->>TE: Order filled
 ```
 
+### 3.4.1 Cloudflare Worker → Fast Layer Contract (Phases 0-5)
+
+When OpenClaw runs on Cloudflare Worker (moltworker), it must communicate with the fast layer via a signed HTTP ingest endpoint.
+
+**Canonical Flow (implemented path):**
+
+```mermaid
+sequenceDiagram
+        participant OCW as OpenClaw on Cloudflare Worker
+        participant ING as Fast Layer Ingest API
+        participant R as Local Redis
+        participant TE as Trading Engine
+
+        Note over OCW: Every 2 minutes
+        OCW->>OCW: Compute regime, scores, watchlist
+        OCW->>ING: POST /context/openclaw (HMAC signed)
+        ING->>ING: Validate signature + timestamp + nonce
+        ING->>R: SET market:regime (TTL 300s)
+        ING->>R: SET market:score:{symbol} (TTL 300s)
+        ING->>R: ZADD market:watchlist (TTL 300s)
+        ING-->>OCW: 202 Accepted
+
+        Note over TE: Real-time loop (non-blocking)
+        TE->>R: GET market:regime + watchlist + scores
+        R-->>TE: Latest context OR key-miss
+        TE->>TE: Key-miss => neutral regime + empty watchlist
+```
+
+**Ingest Endpoint Contract:**
+
+- **Method/Path:** `POST /context/openclaw`
+- **Headers:**
+  - `X-OC-Timestamp` (unix seconds)
+  - `X-OC-Nonce` (uuid)
+  - `X-OC-Signature` (`hex(HMAC_SHA256(secret, timestamp + "\n" + nonce + "\n" + body))`)
+- **Auth policy:** reject if signature invalid, timestamp skew > 60s, or nonce already used (replay protection)
+- **Response:** `202` on accepted payload, `401/409/422` on auth or schema failures
+
+**Payload Schema (v1):**
+
+```json
+{
+  "version": "1.0",
+  "generated_at": "2026-03-11T09:32:00Z",
+  "regime": {
+    "state": "trending",
+    "confidence": 0.85,
+    "reasoning": "Strong ADX, contained volatility"
+  },
+  "scores": [
+    { "symbol": "AAPL", "score": 0.92, "reasoning": "Momentum+volume breakout" }
+  ],
+  "watchlist": ["AAPL", "MSFT", "NVDA"],
+  "insights": "Risk-on regime; favor liquid momentum names"
+}
+```
+
+**Hard Rules:**
+
+1. Worker never writes directly to broker or execution APIs.
+2. Worker never connects directly to internal Redis from public internet.
+3. Trading Engine never blocks waiting for worker responses.
+4. On stale/missing context, fast layer must continue with neutral fallback.
+
 **Example Custom OpenClaw Skill:**
 
 ```python
@@ -550,6 +614,32 @@ class MarketRegimeDetector(Skill):
 - **Testable**: Mock Redis in backtests, replay context generation
 - **Extensible**: Add context skills without touching execution code
 
+### 3.4.2 OpenClaw Knowledge Persistence Strategy
+
+**Short answer:** Yes, use Worker storage for OpenClaw knowledge persistence in Phases 0-5.
+
+**What to store in Worker persistence (R2 via moltworker sync):**
+
+- OpenClaw configuration
+- OpenClaw memory/conversation artifacts
+- Skill workspace files and context notes
+- Pairing metadata and assistant state
+
+**What NOT to store there:**
+
+- Execution-critical state (positions, orders, risk P&L)
+- Real-time decision context consumed by trading engine
+
+Execution-critical state remains in local PostgreSQL/Timescale/Redis.
+
+**Operational Policy:**
+
+1. Enable R2-backed persistence for moltworker from day one.
+2. Keep automatic sync interval enabled (every 5 minutes) and support manual backup trigger.
+3. Treat R2 as OpenClaw memory store, not as trading datastore.
+4. If R2 is temporarily unavailable, trading continues using last-known context + fallback rules.
+5. During Phase 6 migration to dedicated machine, export OpenClaw memory snapshot and import into self-hosted OpenClaw path.
+
 ---
 
 ### 3.5 Storage Layer
@@ -596,13 +686,14 @@ graph TB
 
 **Storage Strategy:**
 
-| Data Type       | Storage     | Retention | Purpose                      |
-| --------------- | ----------- | --------- | ---------------------------- |
-| Real-time ticks | Redis       | 1 hour    | Fast access for live trading |
-| OHLCV bars      | TimescaleDB | 2 years   | Historical analysis          |
-| OpenClaw scores | Redis       | 5 minutes | Fresh intelligence context   |
-| Positions       | PostgreSQL  | Forever   | Audit trail                  |
-| Orders          | PostgreSQL  | Forever   | Compliance & analysis        |
+| Data Type                 | Storage                             | Retention  | Purpose                                 |
+| ------------------------- | ----------------------------------- | ---------- | --------------------------------------- |
+| Real-time ticks           | Redis                               | 1 hour     | Fast access for live trading            |
+| OHLCV bars                | TimescaleDB                         | 2 years    | Historical analysis                     |
+| OpenClaw scores           | Redis                               | 5 minutes  | Fresh intelligence context              |
+| OpenClaw memory/knowledge | Cloudflare R2 (via moltworker sync) | Persistent | Assistant memory and context continuity |
+| Positions                 | PostgreSQL                          | Forever    | Audit trail                             |
+| Orders                    | PostgreSQL                          | Forever    | Compliance & analysis                   |
 
 ---
 
@@ -817,7 +908,7 @@ prometheus-client>=0.21.0
 - `/scripts` - bootstrap, healthcheck, replay smoke test
 - `/docs` - runbook, redis contracts, deployment SOP
 
-**Implementation Plan (Day-by-Day):**
+**Implementation Plan (Step-by-Step):**
 
 - **Step 1 — Python Foundation**
   - Initialize Poetry project and lock dependencies
